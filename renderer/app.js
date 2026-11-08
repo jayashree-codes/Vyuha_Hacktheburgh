@@ -69,6 +69,7 @@ api.onUi(msg => {
   if (msg === 'open-gemini') toggleGem(true);
   if (msg === 'save') saveCurrent();
   if (msg === 'clone') cloneDialog();
+  if (msg === 'behaviour') behaviourDialog();
 });
 
 const activeTab = () => S.tabs.find(t => t.id === S.activeId) || S.tabs[0];
@@ -184,6 +185,7 @@ function projectShell() {
               <span class="sp"></span><button class="mini" data-act="clear-chat">New chat</button></div>
             <div class="chatlog main" id="chatMain"></div>
             <form id="mainForm" class="mainbar" autocomplete="off">
+              ${chipHTML('mainForm')}
               <textarea id="mainInput" rows="2" placeholder="Ask anything about this project, e.g. “I want to build a spam classifier, teach me how”"></textarea>
               <button class="go" aria-label="Send">${ICON.go}</button>
             </form>
@@ -208,6 +210,7 @@ function projectShell() {
       <div class="gemfoot">
         <div class="gemctx" id="gemCtx"></div>
         <form id="gemForm" class="gembar" autocomplete="off">
+          ${chipHTML('gemForm')}
           <textarea id="gemInput" rows="3" placeholder="Ask Gemini to research, explain or build…"></textarea>
           <button class="go" aria-label="Send">${ICON.go}</button>
         </form>
@@ -958,6 +961,7 @@ function msgHTML(m) {
     ${m.text ? `<div class="md">${md(m.text)}</div>` : ''}
     ${m.error ? `<p class="cerr">${esc(m.error)}</p>` : ''}
     ${m.pending ? '<p class="typing">Gemini is working…</p>' : ''}
+    ${bhStyleTag(m)}
   </div>`;
 }
 async function renderChat(pid) {
@@ -975,6 +979,7 @@ async function renderChat(pid) {
   forms.forEach(f => f.classList.remove('off'));
   const c = await api.agentChat(pid);
   if (!P || P.id !== pid) return;
+  bhOnChat(pid, c);
   document.querySelectorAll('[data-mode]').forEach(b => {
     const on = b.dataset.mode === c.mode;
     b.classList.toggle('on', on); b.setAttribute('aria-checked', on);
@@ -1356,8 +1361,10 @@ document.addEventListener('submit', async ev => {
     const input = f.querySelector('textarea');
     const text = input.value.trim();
     if (!text || !AG.hasKey) return;
+    const extra = bhTake(input.id, text);   // how it was typed, and how the last reply was read (numbers only)
     input.value = '';
-    const r = await api.agentAsk(P.id, text, f.id === 'gemForm' ? viewContext() : null);
+    bhRefreshChip(f);
+    const r = await api.agentAsk(P.id, text, f.id === 'gemForm' ? viewContext() : null, extra);
     if (r && r.error) toast(r.error);
   }
   if (f.id === 'termForm' && P) {

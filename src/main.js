@@ -14,9 +14,10 @@ const router = require('./router');
 const { Store } = require('./store');
 const { Terminals } = require('./terminal');
 const agent = require('./agent');
+const { Behaviour } = require('./behaviour');
 const git = require('./git');
 
-let win, store, settings, terms;
+let win, store, settings, terms, behaviour;
 let slot = null;           // where the UI wants the web page drawn: {x, y, width, height}
 let overlayOpen = false;   // hide web pages while a Vyuha dialog or menu is open
 const tabs = [];
@@ -511,6 +512,7 @@ function agentTools(pid, step, ctx) {
       send('ui', 'open-gemini');
       const ok = await new Promise(resolve => approvals.set(id, { resolve }));
       approvals.delete(id);
+      behaviour.note(pid, ok ? 'approved' : 'denied');
       s.status = ok ? 'approved' : 'skipped';
       ctx.save();
       if (!ok) return { skipped: true, note: 'The user chose not to run this command.' };
@@ -665,7 +667,28 @@ async function viewNote(pid, view) {
   return '';
 }
 
-async function askAgent(pid, text, view) {
+// How the user is working right now: is this an early, exploring phase of the project?
+function behaviourContext(pid, mode) {
+  const p = store.get(pid);
+  if (!p) return { mode };
+  const i = p.phases.indexOf(p.phase);
+  return { mode, earlyPhase: i <= 0 || /plan|idea|research|explor|scop|discover|understand/i.test(p.phase || '') };
+}
+let analysing = false;
+async function runBehaviourAnalysis() {
+  const apiKey = loadKey();
+  if (!apiKey || analysing) return { error: apiKey ? 'Already running.' : 'Add your Gemini API key in Settings first.' };
+  analysing = true;
+  try {
+    const res = await agent.analyseBehaviour({ apiKey, model: settings.model, summary: behaviour.analystInput() });
+    const added = behaviour.applyAnalysis(res);
+    send('behaviour', behaviour.summary());
+    return { ok: true, added };
+  } catch (e) { return { error: agent.friendlyError(e, settings.model) }; }
+  finally { analysing = false; }
+}
+
+async function askAgent(pid, text, view, extra = {}) {
   const apiKey = loadKey();
   if (!apiKey) return { error: 'Add your Gemini API key in Settings first.' };
   if (!store.get(pid)) return { error: 'Unknown project.' };
@@ -674,6 +697,15 @@ async function askAgent(pid, text, view) {
   const chat = store.readChat(pid);
   const mode = chat.mode === 'build' ? 'build' : 'teach';
   const entry = { role: 'agent', steps: [], text: '', pending: true, at: Date.now(), mode };
+  // decide how to answer from how the user is working (numbers only; see behaviour.js)
+  let decision = null;
+  try {
+    decision = behaviour.begin(pid, text, { typing: extra.typing, reading: extra.reading, context: behaviourContext(pid, mode), override: extra.style });
+    if (decision && decision.source !== 'off') {
+      entry.style = { style: decision.style, wouldBe: decision.wouldBe || null, source: decision.source, confidence: decision.confidence, label: decision.label,
+                      matched: (decision.matched || []).map(m => m.text) };
+    }
+  } catch (e) { console.error('behaviour:', e); }
   chat.transcript.push({ role: 'user', text, at: Date.now(), viewing: view && (view.path || view.title) || null }, entry);
   const save = () => { store.writeChat(pid, chat); notifyAgent(pid); };
   const ctx = { save, filedDataset: false, planSet: false, found: new Map(), recorded: new Set() };
@@ -692,6 +724,7 @@ async function askAgent(pid, text, view) {
       history: chat.history, message, tools: agentTools(pid, step, ctx),
       onNotice: label => step({ kind: 'info', label }),
       mode,
+      style: decision && decision.directive,
       onText: text => {   // streamed reply: save at most ~6 times a second
         entry.text = text;
         const now = Date.now();
@@ -721,6 +754,7 @@ async function askAgent(pid, text, view) {
     save();
     running.delete(pid);
     broadcast();
+    if (behaviour.needsAnalysis()) runBehaviourAnalysis().catch(() => {});
   }
   return { ok: !entry.error };
 }
@@ -1034,7 +1068,8 @@ function buildMenu() {
     ] },
     { role: 'editMenu' },
     { label: 'Settings', submenu: [
-      { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: ui('settings') }
+      { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: ui('settings') },
+      { label: 'How Vyuha Sees You…', click: ui('behaviour') }
     ] },
     { label: 'View', submenu: [
       { label: 'Focus Address Bar', accelerator: 'CmdOrCtrl+L', click: ui('focus-address') },
@@ -1133,7 +1168,7 @@ function wireIpc() {
         case 'movePhase': out.phase = store.movePhase(pid, a.phase, a.dir); break;
         case 'deletePhase': store.deletePhase(pid, a.phase); break;
         case 'currentPhase': store.setCurrentPhase(pid, a.phase); break;
-        case 'toggleTask': store.setTask(pid, a.phase, { index: Number(a.index) }); break;
+        case 'toggleTask': store.setTask(pid, a.phase, { index: Number(a.index) }); behaviour.note(pid, 'task'); break;
         default: throw new Error('Unknown action');
       }
       broadcast();
@@ -1218,7 +1253,18 @@ function wireIpc() {
     return settings;
   });
   ipcMain.handle('agent:status', () => agentStatus());
-  ipcMain.handle('agent:ask', (_e, pid, text, view) => askAgent(pid, String(text || '').trim(), view));
+  ipcMain.handle('agent:ask', (_e, pid, text, view, extra) => askAgent(pid, String(text || '').trim(), view, extra || {}));
+  // behaviour learning
+  ipcMain.handle('behaviour:preview', (_e, pid, text, typing, override) => {
+    if (!store.get(pid)) return null;
+    const mode = store.readChat(pid).mode === 'build' ? 'build' : 'teach';
+    return behaviour.preview(pid, String(text || ''), typing || {}, behaviourContext(pid, mode), override);
+  });
+  ipcMain.on('behaviour:note', (_e, pid, kind) => behaviour.note(pid, kind));
+  ipcMain.handle('behaviour:summary', () => behaviour.summary());
+  ipcMain.handle('behaviour:edit', (_e, op, a) => { try { return behaviour.edit(op, a); } catch (e) { return { error: e.message }; } });
+  ipcMain.handle('behaviour:analyse', () => runBehaviourAnalysis());
+  ipcMain.on('behaviour:reveal', () => { fs.mkdirSync(behaviour.dir, { recursive: true }); shell.openPath(behaviour.dir); });
   ipcMain.handle('agent:chat', (_e, pid) => { const c = store.readChat(pid); return { transcript: c.transcript || [], running: running.has(pid), mode: c.mode === 'build' ? 'build' : 'teach' }; });
   ipcMain.handle('agent:setMode', (_e, pid, mode) => {
     const c = store.readChat(pid); c.mode = mode === 'build' ? 'build' : 'teach'; store.writeChat(pid, c); notifyAgent(pid); return c.mode;
@@ -1241,6 +1287,7 @@ function wireIpc() {
 app.whenReady().then(() => {
   store = new Store(path.join(app.getPath('userData'), 'projects'), path.join(app.getPath('userData'), 'folders.json'));
   settings = loadSettings();
+  behaviour = new Behaviour(path.join(app.getPath('userData'), 'behaviour'));
   terms = new Terminals((pid, ev) => send('term', { pid, ...ev }));
   wireIpc();
 
@@ -1261,5 +1308,5 @@ app.whenReady().then(() => {
   console.log(`Vyuha projects folder: ${store.dir}`);
 });
 
-app.on('before-quit', () => { if (terms) terms.stopAll(); });
+app.on('before-quit', () => { if (terms) terms.stopAll(); try { if (behaviour) behaviour.finishAll(); } catch (e) { /* ignore */ } });
 app.on('window-all-closed', () => app.quit());

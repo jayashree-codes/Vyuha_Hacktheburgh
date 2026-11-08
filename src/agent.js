@@ -202,7 +202,7 @@ const BUILD_MODE = `MODE: BUILD WITH ME. The user wants you to do the work along
 
 const cut = (s, n) => (s && s.length > n ? s.slice(0, n) + `\n…(${s.length - n} more characters)` : s || '');
 
-function systemPrompt(p, files, paths = [], mode = 'teach') {
+function systemPrompt(p, files, paths = [], mode = 'teach', style = '') {
   const colName = id => ((p.collections || []).find(c => c.id === id) || { name: id }).name;
   const sources = p.events.map(e => `- [${colName(e.type)}${e.status === 'rejected' ? ', rejected' : ''}] ${e.title || e.url} | ${e.url} | phase ${e.phase || '-'} | why: ${e.why || '-'}`).join('\n') || '(none yet)';
   const decisions = (p.decisions || []).map(d => `- ${d.title}: ${d.detail} (phase ${d.phase})`).join('\n') || '(none yet)';
@@ -259,7 +259,7 @@ How to work:
   - When a meaningful choice is made (a dataset, a library, an approach), call record_decision.
   - When a phase's work is done, add a short summary to its notes (update_notes with append) and move on with set_phase.
 - Cite sources as markdown links using their real URLs. Never invent URLs.
-- Stay within this project. If the user asks about something unrelated, answer briefly without filing anything.`;
+- Stay within this project. If the user asks about something unrelated, answer briefly without filing anything.${style ? '\n\n' + style : ''}`;
 }
 
 // Keep saved history small: drop long page texts from old tool results and keep the last turns.
@@ -319,12 +319,12 @@ async function send(chat, message, onText, prefix) {
   return { text, functionCalls: calls.length ? calls : undefined };
 }
 
-async function run({ apiKey, model, fallbackModel, project, files, paths, history, message, tools, client, onNotice, onText, mode }) {
+async function run({ apiKey, model, fallbackModel, project, files, paths, history, message, tools, client, onNotice, onText, mode, style }) {
   const ai = client || new GoogleGenAI({ apiKey });
   const notice = onNotice || (() => {});
   const start = m => ai.chats.create({
     model: m,
-    config: { systemInstruction: systemPrompt(project, files, paths, mode), tools: TOOLS },
+    config: { systemInstruction: systemPrompt(project, files, paths, mode, style), tools: TOOLS },
     history: history || []
   });
   const onRetry = (n, ms) => notice(`Gemini is busy, retrying in ${ms / 1000}s (attempt ${n + 1})`);
@@ -425,6 +425,46 @@ ${reply.slice(0, 12000)}`,
   try { return JSON.parse(r.text || '{}'); } catch (e) { return null; }
 }
 
+// The behaviour analyst: reads aggregate numbers about how the user works and proposes testable patterns.
+async function analyseBehaviour({ apiKey, model, client, summary }) {
+  const ai = client || new GoogleGenAI({ apiKey });
+  const r = await withRetry(() => ai.models.generateContent({
+    model,
+    contents: `You help an app learn how ONE user prefers to be answered. Below are aggregate numbers from their recent messages (no text).
+
+How to read them:
+- Each bucket groups messages by situation: specificity (how technical/detailed the prompt was, compared with this user's own normal), words (length vs their normal), project phase, mode (teach = learning, build = doing), time of day, and whether it was a rephrase of the previous question.
+- For each answer style used in that bucket: n = messages, reward = 0..1 (higher = the reply worked: code copied, command run, task ticked, no rephrase), chosenByUser = times the user picked that style themselves.
+- rewardAdaptive vs rewardHoldout compares replies styled by the app with unstyled ones.
+
+Tasks:
+1. Propose up to 3 NEW hypotheses about this user that the numbers support and that are not already listed. Each must be testable: "when" is a list of conditions on these features only: ${summary.features.join(', ')}. Features ending in _z are z-scores against the user's own normal (use thresholds like -0.5 or 1); the others are 0/1 flags (use op "=" with value 0 or 1). "style" is one of: ${Object.keys(summary.styles).join(', ')}. Write "text" in the first person, as the user would say it, in one sentence.
+2. List ids of existing hypotheses with status "testing" that the numbers contradict, with a short reason.
+3. "notes": 2-4 plain sentences on what you see, including when the data is too thin to say anything.
+Only propose what the numbers support; with little data, propose nothing.
+
+Data:
+${JSON.stringify(summary, null, 1).slice(0, 30000)}`,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          new: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: {
+            text: { type: Type.STRING }, style: { type: Type.STRING },
+            when: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: {
+              feature: { type: Type.STRING }, op: { type: Type.STRING }, value: { type: Type.NUMBER } }, required: ['feature', 'op', 'value'] } } },
+            required: ['text', 'style', 'when'] } },
+          retire: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, why: { type: Type.STRING } }, required: ['id'] } },
+          notes: { type: Type.STRING }
+        },
+        required: ['new', 'notes']
+      }
+    }
+  }));
+  try { return JSON.parse(r.text || '{}'); } catch (e) { return null; }
+}
+
 async function commitMessage({ apiKey, model, client, changes, diff, added }) {
   const ai = client || new GoogleGenAI({ apiKey });
   const r = await withRetry(() => ai.models.generateContent({
@@ -449,4 +489,4 @@ async function test({ apiKey, model }) {
 // tests use short waits
 const _setRetryWaits = w => RETRY_WAITS.splice(0, RETRY_WAITS.length, ...w);
 
-module.exports = { run, test, commitMessage, extractDatasets, extractPlan, trimHistory, friendlyError, SITES, TOOLS, systemPrompt, _setRetryWaits };
+module.exports = { run, test, commitMessage, analyseBehaviour, extractDatasets, extractPlan, trimHistory, friendlyError, SITES, TOOLS, systemPrompt, _setRetryWaits };

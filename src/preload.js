@@ -62,6 +62,13 @@ contextBridge.exposeInMainWorld('vyuha', {
   agentApprove: send('agent:approve'),
   agentSetKey: invoke('agent:setKey'),
   agentTest: invoke('agent:test'),
+  // behaviour learning (numbers only)
+  behaviourPreview: invoke('behaviour:preview'),
+  behaviourNote: send('behaviour:note'),
+  behaviourSummary: invoke('behaviour:summary'),
+  behaviourEdit: invoke('behaviour:edit'),
+  behaviourAnalyse: invoke('behaviour:analyse'),
+  behaviourReveal: send('behaviour:reveal'),
   // events from the main process
   onState: listen('state'),
   onUi: listen('ui'),
