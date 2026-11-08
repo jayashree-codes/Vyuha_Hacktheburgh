@@ -71,7 +71,9 @@ code, pre { font-family: var(--f-mono); }
 .home { height: 100%; display: flex; flex-direction: column; align-items: center; padding: 22vh 20px 40px; }
 .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 30px; color: var(--fg); }
 .brand svg { color: var(--accent); }
-.wordmark { font-family: var(--f-display); font-weight: 700; font-size: 68px; letter-spacing: -.035em; line-height: 1; }
+/* the "vyuha" wordmark uses Sora (bundled, SIL Open Font License) */
+@font-face { font-family: 'Sora'; src: url('assets/sora-latin-700-normal.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+.wordmark { font-family: 'Sora', var(--f-display); font-weight: 700; font-size: 68px; letter-spacing: -.04em; line-height: 1; }
 .search { width: 100%; max-width: 640px; display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 18px; box-shadow: var(--shadow); }
 .search:focus-within { border-color: var(--accent); }
 .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; padding: 9px 0; font-size: 16px; }
@@ -493,3 +495,34 @@ kbd { font-family: var(--f-mono); font-size: 11.5px; padding: 1px 5px; border: 1
 .bhadd select { min-width: 0; max-width: 100%; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px; }
 .bhstats { margin: 4px 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 .btn.danger { color: var(--vd); }
+
+/* ---------- team context ---------- */
+.teamscm { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 8px; }
+.teamscm .scmrow { gap: 6px; }
+.teamphase { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 10px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.tprow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tptasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tptasks li { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.tptasks li.done .tt { color: var(--muted); text-decoration: line-through; }
+.tptasks .tt { flex: 1; min-width: 0; }
+.tptasks .who { color: var(--muted); font-size: 12px; }
+.sel.sm { padding: 2px 6px; font-size: 12px; }
+.ttabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 12px 0 14px; flex-wrap: wrap; }
+.ttabs button { padding: 6px 10px; border-radius: 6px 6px 0 0; color: var(--muted); font-size: 13px; }
+.ttabs button.on { color: inherit; box-shadow: inset 0 -2px 0 var(--accent); }
+.ttable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ttable th, .ttable td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.ttable .pbar { display: inline-block; width: 80px; margin-right: 8px; vertical-align: middle; }
+.tmembers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.tsearch { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: inherit; margin-bottom: 12px; }
+.tcard { border: 1px solid var(--line); border-left: 3px solid var(--ds); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; font-size: 13px; }
+.tcard.open { border-left-color: var(--muted); }
+.tcard.focus { box-shadow: 0 0 0 2px var(--accent); }
+.tcard h3 { margin: 0 0 4px; font-size: 15px; }
+.tcard p { margin: 6px 0; }
+.tcard details pre { max-height: 220px; overflow: auto; }
+.decision.superseded { opacity: .75; }
+.tbanner { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; background: var(--sunk); border-left: 3px solid var(--ds); }
+.tbanner span { flex: 1; min-width: 0; }
+.tdraft { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
+.tdraft textarea { width: 100%; resize: vertical; font: inherit; }

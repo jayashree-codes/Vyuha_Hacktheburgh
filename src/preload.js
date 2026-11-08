@@ -46,6 +46,16 @@ contextBridge.exposeInMainWorld('vyuha', {
   githubStatus: invoke('github:status'),
   githubSetToken: invoke('github:setToken'),
   onGitChanged: listen('git-changed'),
+  // team context (its own branch; code push/pull are separate)
+  teamState: invoke('team:state'),
+  teamSetup: invoke('team:setup'),
+  teamPull: invoke('team:pull'),
+  teamPending: invoke('team:pending'),
+  teamPublish: invoke('team:publish'),
+  teamAction: invoke('team:action'),
+  teamImportStyle: invoke('team:importStyle'),
+  teamUndoStyle: invoke('team:undoStyle'),
+  onTeam: listen('team'),
   // terminal
   termGet: invoke('term:get'),
   termRun: invoke('term:run'),

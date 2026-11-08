@@ -19,9 +19,12 @@ const itemsByTab = {};        // tab id -> open editor tabs (keys)
 const revealed = {};          // project id -> file last revealed in the tree
 const termHistory = []; let termHistIdx = -1;
 
+// The Vyuha mark (a Chakravyuha: rings that open inward to the core). Same artwork as renderer/assets/vyuha-mark.svg.
+// Each inlined copy gets its own gradient id so several on one page don't clash.
+const vyuhaMark = (s, id) => `<svg width="${s}" height="${s}" viewBox="0 0 128 128" fill="none" role="img" aria-label="Vyuha"><defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="12" y1="12" x2="116" y2="116"><stop offset="0" stop-color="#5EEAD4"/><stop offset="0.55" stop-color="#14B8A6"/><stop offset="1" stop-color="#0D9488"/></linearGradient></defs><g stroke="url(#${id})" stroke-width="10.5" stroke-linecap="round"><path d="M46.21 15.14 A52 52 0 1 1 15.14 46.21"/><path d="M74.23 97.47 A35 35 0 1 1 97.47 74.23"/><path d="M60.87 46.27 A18 18 0 1 1 46.27 60.87"/></g><circle cx="64" cy="64" r="7.5" fill="url(#${id})"/></svg>`;
 const ICON = {
-  mark: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 13c2.5-.5 3-3.5 5.5-4s4 1.5 5.5-1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="1 2.6"/><path d="M13 7V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M13 2 9 3.5 13 5" fill="currentColor"/></svg>',
-  markBig: s => `<svg width="${s}" height="${s}" viewBox="0 0 44 44" fill="none"><path d="M7 35c6-1 7-8 13-9s9 4 15-3" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="1 5"/><circle cx="7" cy="35" r="3.2" fill="currentColor"/><circle cx="20" cy="26" r="3.2" fill="currentColor"/><path d="M35 23V7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M35.5 7.5 25 11l10.5 4" fill="currentColor"/></svg>`,
+  mark: vyuhaMark(14, 'vy-mark-sm'),
+  markBig: s => vyuhaMark(s, 'vy-mark-' + s),
   go: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h9M8.5 4 12.5 8l-4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chev: '<svg class="chev" width="10" height="10" viewBox="0 0 10 10"><path d="M3 1.5 6.5 5 3 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   folder: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M1.75 4.25c0-.55.45-1 1-1h3.4l1.5 1.5h5.6c.55 0 1 .45 1 1v6.5c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1v-8Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
@@ -56,6 +59,7 @@ api.onAgent(pid => { if (P && P.id === pid) renderChat(pid); });
 api.onTerm(onTermEvent);
 api.onFileChanged(onFileChanged);
 api.onGitChanged(pid => refreshGit(pid));
+api.onTeam(ev => onTeamEvent(ev));   // defined in team.js, which loads after this file
 window.addEventListener('focus', () => { if (P && sideView[P.id] === 'git') refreshGit(P.id); });
 api.onUi(msg => {
   if (msg === 'new-project') newProjectDialog();
@@ -198,6 +202,7 @@ function projectShell() {
           <button class="mini" data-act="term-stop" id="termStop" hidden>Stop</button>
           <button class="mini" data-act="term-clear">Clear</button>
           <button class="sidebtn" data-act="toggle-term" aria-label="Close terminal">×</button></div>
+        <div class="tbanner" id="termBanner" hidden></div>
         <pre class="termout" id="termOut"></pre>
         <form id="termForm" class="termin" autocomplete="off"><span>$</span><input id="termInput" spellcheck="false" placeholder="Run a command in this project, e.g. python train.py"></form>
       </div>
@@ -403,6 +408,7 @@ function itemLabel(t, k) {
   if (k.startsWith('event:')) { const e = P && P.events.find(x => x.id === k.slice(6)); return 'Info: ' + (e ? shortTitle(e) : 'source'); }
   if (k.startsWith('phase:')) return k.slice(6) + '.md';
   if (k === 'decisions') return 'decisions.md';
+  if (k === 'team' || k.startsWith('team:')) return 'Team';
   return k;
 }
 function itemIcon(k) {
@@ -682,6 +688,7 @@ function scmHTML(p) {
         ${fileIcon(base(f.path))}<span class="nm">${esc(base(f.path))}</span><span class="dir">${esc(f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '')}</span>
         <span class="gcode ${CODE_CLS[f.code] || ''}">${esc(f.code)}</span></button>`).join('')
       : '<p class="empty sm">No changes since the last commit.</p>'}
+    ${teamScmHTML(p, g)}
     <div class="scmh">Recent commits</div>
     ${g.commits.length ? g.commits.map(c => `<div class="commit" title="${esc(c.hash)} by ${esc(c.author)}"><span class="nm">${esc(c.subject)}</span><span class="when">${esc(c.when)}</span></div>`).join('') : '<p class="empty sm">No commits yet.</p>'}
   </div>`;
@@ -776,6 +783,7 @@ function sidebarHTML(t, p) {
     }
     if (edit && edit.kind === 'newPhase') h += editRow(padOf(1), `<span class="ic-ph">${ICON.flag}</span>`);
     h += `<div class="row tree-row ${docSel === 'decisions' ? 'active' : ''}"><button class="lk" data-doc="decisions" ${padOf(1)}><span class="ic-ac">${ICON.file}</span><span class="nm">decisions.md</span><span class="cnt">${(p.decisions || []).length}</span></button></div>`;
+    h += teamSideRow(p, docSel, padOf(1));
   }
 
   return sideFrame(p, `<div class="tree" id="sideTree">${h}</div>`);
@@ -878,6 +886,8 @@ function renderDoc(t, p) {
       <h2>Why it's here</h2><div class="why">${esc(e.why || '')}</div>
       <h2>Used in</h2>${(e.usedIn || []).length ? `<div class="chips">${e.usedIn.map(f => docChip('file:' + f, f)).join('')}</div>` : '<p class="empty">Not used in any file yet.</p>'}
     </div>`;
+  } else if (kind === 'team') {
+    body = teamPageHTML(p, val);
   } else if (kind === 'phase') {
     const ci = p.phases.indexOf(p.phase), pi = p.phases.indexOf(val);
     const items = [
@@ -887,6 +897,7 @@ function renderDoc(t, p) {
     body = `<div class="doc">
       <div><span class="tag">Phase ${pi + 1} of ${p.phases.length}</span><span class="tag">${pi < ci ? 'done' : pi === ci ? 'in progress' : 'upcoming'}</span></div>
       <h1>${esc(val)}</h1>
+      ${teamPhaseHTML(p, val)}
       ${(pr => pr ? `<div class="pbar" role="progressbar" aria-valuenow="${pr.done}" aria-valuemax="${pr.total}"><i style="width:${Math.round(100 * pr.done / pr.total)}%"></i></div><p class="empty">${pr.done} of ${pr.total} tasks done${pi !== ci ? ` · <button class="linkbtn" data-op="currentPhase" data-phase="${esc(val)}">Make this the current phase</button>` : ''}</p>` : '')(progress((p.phaseNotes || {})[val]))}
       <div class="md notes" data-phase="${esc(val)}">${md((p.phaseNotes || {})[val] || 'No plan yet. Ask Gemini to plan the project and the phases fill in with goals and tasks.', { tasks: true })}</div>
       <h2>What happened, in order</h2>
@@ -936,7 +947,7 @@ function onTermEvent(ev) {
 }
 
 /* ---------- Gemini panel ---------- */
-const STEP_ICON = { source: ICON.db, info: ICON.info, search: ICON.search, open: ICON.link, read: ICON.file, write: ICON.file, decision: ICON.flag, phase: ICON.flag, approve: ICON.term };
+const STEP_ICON = { source: ICON.db, info: ICON.info, search: ICON.search, open: ICON.link, read: ICON.file, write: ICON.file, decision: ICON.flag, phase: ICON.flag, approve: ICON.term, team: ICON.info };
 function stepHTML(s) {
   if (s.kind === 'approve') {
     const head = s.status === 'waiting' ? 'Gemini wants to run' : s.status === 'skipped' ? 'Skipped' : `Ran${s.exit != null ? ` · exit ${esc(s.exit)}` : ''}`;
@@ -1017,7 +1028,7 @@ function updateGemCtx(t) {
 function md(src, opts = {}) {
   let taskNo = 0;
   const blocks = [];
-  const s = String(src || '').replace(/```[\w+-]*\n([\s\S]*?)```/g, (_, code) => {
+  const s = String(src || '').replace(/\s*<!--vt:[\w-]+-->/g, '').replace(/```[\w+-]*\n([\s\S]*?)```/g, (_, code) => {
     blocks.push(`<div class="codewrap"><button class="copy" data-copy title="Copy code">Copy</button><pre class="mdcode"><code>${esc(code.replace(/\n$/, ''))}</code></pre></div>`);
     return `\n\u0000${blocks.length - 1}\u0000\n`;
   });
@@ -1253,6 +1264,7 @@ document.addEventListener('click', ev => {
     return;
   }
   if (el.dataset.op && t.project) { runOp(t.project, el.dataset); return; }
+  if (el.dataset.team && t.project) { teamClick(t.project, el); return; }
   if (act === 'add-link') { addLinkDialog(el.dataset.col || ''); return; }
   if (el.id === 'newTab') api.newTab();
   else if (el.id === 'back') api.back();

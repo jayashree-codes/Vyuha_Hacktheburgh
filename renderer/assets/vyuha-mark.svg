@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="512" height="512" role="img" aria-label="Vyuha">
+  <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="12" y1="12" x2="116" y2="116"><stop offset="0" stop-color="#5EEAD4"/><stop offset="0.55" stop-color="#14B8A6"/><stop offset="1" stop-color="#0D9488"/></linearGradient></defs>
+  <g>
+    <path d="M46.21 15.14 A52 52 0 1 1 15.14 46.21" fill="none" stroke="url(#g)" stroke-width="10.50" stroke-linecap="round"/>
+    <path d="M74.23 97.47 A35 35 0 1 1 97.47 74.23" fill="none" stroke="url(#g)" stroke-width="10.50" stroke-linecap="round"/>
+    <path d="M60.87 46.27 A18 18 0 1 1 46.27 60.87" fill="none" stroke="url(#g)" stroke-width="10.50" stroke-linecap="round"/>
+    <circle cx="64" cy="64" r="7.50" fill="url(#g)"/>
+  </g>
+</svg>

@@ -16,6 +16,9 @@ const { Terminals } = require('./terminal');
 const agent = require('./agent');
 const { Behaviour } = require('./behaviour');
 const git = require('./git');
+const { Team, takeoverBlocked, describeEvent } = require('./team');
+const teamPlan = require('./team-plan');
+const teamHooks = require('./team');
 
 let win, store, settings, terms, behaviour;
 let slot = null;           // where the UI wants the web page drawn: {x, y, width, height}
@@ -57,6 +60,33 @@ const loadKey = () => process.env.GEMINI_API_KEY || loadSecret('gemini');
 const saveKey = key => saveSecret('gemini', key);
 // GitHub personal access token (GITHUB_TOKEN in the environment also works)
 const gitToken = () => process.env.GITHUB_TOKEN || loadSecret('github');
+/* ---------- team context (only for projects where it is set up) ---------- */
+const teams = new Map();   // root -> Team
+function makeTeam(pid) {
+  const root = store.root(pid);
+  if (!root) return null;
+  let t = teams.get(root);
+  if (!t) {
+    t = new Team({ root, project: pid, git, token: gitToken,
+      identity: async () => { const u = await githubApi('/user').catch(() => null); return u ? { name: u.name || u.login, email: `${u.id}+${u.login}@users.noreply.github.com` } : null; },
+      writeUp: input => { const apiKey = loadKey(); return apiKey ? agent.extractIssue({ apiKey, model: settings.model, ...input }) : null; } });
+    teams.set(root, t);
+  }
+  return t;
+}
+const teamFor = pid => { const root = store && store.root(pid); return root && Team.isEnabled(root) ? makeTeam(pid) : null; };
+const opsFor = pid => teamPlan.planOps(store, pid, teamFor(pid));
+const sendTeam = (pid, kind, data = {}) => send('team', { pid, kind, ...data });
+const teamCommandContext = pid => teamPlan.commandContext(store, pid);
+// Run a team-aware operation; an action the fold refuses becomes a toast and an error for Gemini
+async function teamTry(pid, fn) {
+  try { return await fn(); }
+  catch (e) {
+    if (e instanceof teamPlan.Rejected) { sendTeam(pid, 'rejected', { reason: e.message }); return { error: e.message, rejected: true }; }
+    throw e;
+  }
+}
+
 function agentStatus() {
   const k = loadKey();
   return { hasKey: !!k, fromEnv: !!process.env.GEMINI_API_KEY, hint: k ? '…' + k.slice(-4) : null, model: settings.model };
@@ -438,7 +468,7 @@ const tail = (s, n) => (s.length > n ? `…(${s.length - n} earlier characters o
 
 function agentTools(pid, step, ctx) {
   const remember = list => { for (const x of list || []) if (x && x.url) ctx.found.set(normUrl(x.url), x.title); };
-  return {
+  const tools = {
     find_videos: async ({ query }) => {
       step({ kind: 'search', label: `Searched YouTube for "${query}"`, url: `https://www.youtube.com/results?search_query=${enc(query)}` });
       const videos = await findVideos(pid, query);
@@ -458,7 +488,7 @@ function agentTools(pid, step, ctx) {
       return r;
     },
     set_plan: async ({ phases, current }) => {
-      const order = store.setPlan(pid, phases, current);
+      const order = await opsFor(pid).setPlan(phases, current);
       ctx.planSet = true;
       step({ kind: 'phase', label: `Planned ${order.length} phases: ${order.map(o => o.replace(/^\d+-/, '')).join(' → ')}`, doc: 'phase:' + store.get(pid).phase });
       broadcast();
@@ -467,10 +497,11 @@ function agentTools(pid, step, ctx) {
     update_task: async ({ phase, task, done }) => {
       const p = store.get(pid);
       const ph = phase ? (p.phases.find(x => x === phase || x.replace(/^\d+-/, '') === String(phase).replace(/^\d+-/, '')) || phase) : p.phase;
-      store.setTask(pid, ph, { text: task, done: done !== false });
-      step({ kind: 'phase', label: `${done === false ? 'Reopened' : 'Done'}: ${task}`, doc: 'phase:' + ph });
+      const r = await teamTry(pid, () => opsFor(pid).updateTask(ph, task, done !== false));
+      if (r.error) return r;
+      step({ kind: 'phase', label: `${done === false ? 'Reopened' : 'Done'}: ${task}`, doc: 'phase:' + (r.phase || ph) });
       broadcast();
-      return { ok: true, phase: ph };
+      return { ok: true, phase: r.phase || ph };
     },
     search_web: async ({ site, query, reason }) => {
       const url = (SEARCH_URL[site] || SEARCH_URL.web)(query);
@@ -499,6 +530,7 @@ function agentTools(pid, step, ctx) {
       }
       store.linkSources(pid, [...(source_urls || []), ...urls], saved);
       step({ kind: 'write', label: `Wrote ${saved}`, doc: 'file:' + saved });
+      try { const tm = teamFor(pid); if (tm) tm.noteFileWritten(saved); } catch (e) { console.error('team context:', e); }
       send('file-changed', { pid, path: saved });
       reloadPreviews(pid);
       broadcast();
@@ -522,7 +554,10 @@ function agentTools(pid, step, ctx) {
         const r = await terms.run(pid, store.root(pid), command, { timeoutMs: secs * 1000, by: 'gemini' });
         s.exit = r.code;
         ctx.save();
-        return { exit_code: r.code, stopped: !!r.signal, output: tail(r.output, 6000) };
+        // team context: open/fix issue cards, and show a teammate's fix for a known error (no-op without team context)
+        const t = await teamHooks.geminiCommandHook(teamFor(pid), { command, result: r, step, ...teamCommandContext(pid) });
+        t.writeUps.then(list => { if (list.some(Boolean)) sendTeam(pid, 'changed'); });
+        return { exit_code: r.code, stopped: !!r.signal, output: tail(r.output, 6000), ...t.fields };
       } catch (e) { s.exit = 'error'; ctx.save(); return { error: e.message }; }
     },
     record_source: async ({ url, title, type, why }) => {
@@ -541,13 +576,15 @@ function agentTools(pid, step, ctx) {
     update_notes: async ({ phase, note, append }) => {
       const p = store.get(pid);
       const ph = String(phase || p.phase).trim();
-      store.setPhaseNote(pid, ph, note, !!append);
+      await opsFor(pid).updateNotes(ph, note, !!append);
       step({ kind: 'phase', label: `Updated ${ph}.md`, doc: 'phase:' + ph });
       broadcast();
       return { ok: true, phase: ph };
     },
-    record_decision: async ({ title, detail, source_urls }) => {
-      store.addDecision(pid, title, detail, source_urls);
+    record_decision: async ({ title, detail, source_urls, area }) => {
+      const d = await teamTry(pid, () => opsFor(pid).recordDecision(title, detail, source_urls, area));
+      if (d && d.error) return d;
+      if (d && d.teamId) ctx.decisions = [...(ctx.decisions || []), d.teamId];
       step({ kind: 'decision', label: `Recorded decision: ${title}`, doc: 'decisions' });
       broadcast();
       return { ok: true };
@@ -559,6 +596,17 @@ function agentTools(pid, step, ctx) {
       return { ok: true, phase: ph };
     }
   };
+  // team context only: claim the task Gemini is about to work on
+  if (teamFor(pid)) {
+    tools.claim_task = async ({ phase, task }) => {
+      const r = await teamTry(pid, () => opsFor(pid).claimTask(phase, task));
+      if (r.error) return r;
+      step({ kind: 'phase', label: `Claimed: ${task}`, doc: 'phase:' + (r.phase || store.get(pid).phase) });
+      broadcast();
+      return { ok: true, phase: r.phase, owner: r.owner };
+    };
+  }
+  return tools;
 }
 
 const notifyAgent = pid => send('agent', pid);
@@ -621,7 +669,7 @@ const colName = (pid, id) => ((store.get(pid).collections || []).find(c => c.id 
 async function savePlanFromReply(pid, question, reply, apiKey, step) {
   const plan = await agent.extractPlan({ apiKey, model: settings.model, question, reply });
   if (!plan || !plan.phases || plan.phases.length < 2) return;
-  const order = store.setPlan(pid, plan.phases, plan.current);
+  const order = await opsFor(pid).setPlan(plan.phases, plan.current);
   step({ kind: 'phase', label: `Planned ${order.length} phases: ${order.map(o => o.replace(/^\d+-/, '')).join(' → ')}`, doc: 'phase:' + store.get(pid).phase });
   broadcast();
 }
@@ -704,6 +752,8 @@ async function askAgent(pid, text, view, extra = {}) {
     if (decision && decision.source !== 'off') {
       entry.style = { style: decision.style, wouldBe: decision.wouldBe || null, source: decision.source, confidence: decision.confidence, label: decision.label,
                       matched: (decision.matched || []).map(m => m.text) };
+      const borrowed = (decision.matched || []).find(m => m.from && m.style === decision.style);
+      if (borrowed) entry.style.from = borrowed.from;   // shown as "from <name>'s pattern"
     }
   } catch (e) { console.error('behaviour:', e); }
   chat.transcript.push({ role: 'user', text, at: Date.now(), viewing: view && (view.path || view.title) || null }, entry);
@@ -719,11 +769,17 @@ async function askAgent(pid, text, view, extra = {}) {
       if (files.length >= 12) break;
     }
     const message = (await viewNote(pid, view)) + text;
+    // team context: fresh plan from teammates, a Team section and the claim_task tool
+    let teamSection = '', toolDecls;
+    if (teamFor(pid)) {
+      try { teamSection = teamPlan.teamPromptSection(await opsFor(pid).sync()); toolDecls = agent.teamTools(); }
+      catch (e) { console.error('team context:', e); }
+    }
     const res = await agent.run({
       apiKey, model: settings.model, fallbackModel: settings.fallbackModel, project: store.full(pid), files, paths,
       history: chat.history, message, tools: agentTools(pid, step, ctx),
       onNotice: label => step({ kind: 'info', label }),
-      mode,
+      mode, toolDecls, teamSection,
       style: decision && decision.directive,
       onText: text => {   // streamed reply: save at most ~6 times a second
         entry.text = text;
@@ -1163,12 +1219,13 @@ function wireIpc() {
                                 why: (a.why || '').trim() || 'Added by hand' });
           break;
         }
-        case 'newPhase': out.phase = store.addPhase(pid, a.name); break;
-        case 'renamePhase': out.phase = store.renamePhase(pid, a.phase, a.name); break;
-        case 'movePhase': out.phase = store.movePhase(pid, a.phase, a.dir); break;
-        case 'deletePhase': store.deletePhase(pid, a.phase); break;
+        // phases and tasks go through team context when it is set up (the fold decides who may do what)
+        case 'newPhase': out.phase = await opsFor(pid).addPhase(a.name); break;
+        case 'renamePhase': out.phase = await opsFor(pid).renamePhase(a.phase, a.name); break;
+        case 'movePhase': out.phase = await opsFor(pid).movePhase(a.phase, a.dir); break;
+        case 'deletePhase': await opsFor(pid).deletePhase(a.phase); break;
         case 'currentPhase': store.setCurrentPhase(pid, a.phase); break;
-        case 'toggleTask': store.setTask(pid, a.phase, { index: Number(a.index) }); behaviour.note(pid, 'task'); break;
+        case 'toggleTask': await opsFor(pid).toggleTask(a.phase, Number(a.index)); behaviour.note(pid, 'task'); break;
         default: throw new Error('Unknown action');
       }
       broadcast();
@@ -1215,6 +1272,55 @@ function wireIpc() {
     catch (e) { return { error: e.message }; }
   });
   ipcMain.handle('git:clone', (_e, url) => cloneRepo(url));
+
+  // team context (its own branch and buttons; code push/pull are untouched)
+  const teamView = async (pid, st) => {
+    const tm = teamFor(pid);
+    if (!tm) return { enabled: false };
+    st = st || await opsFor(pid).sync();
+    const now = Date.now();
+    const blocked = Object.fromEntries(st.fold.phases.map(ph => [ph.id, takeoverBlocked(st.fold, ph.id, st.me.id, now)]));
+    const { accepted, ...fold } = st.fold;
+    return { enabled: true, me: st.me, fold: { ...fold, timeline: accepted.slice(-60).reverse().map(e => ({ at: e.at, by: e.by, text: describeEvent(e, st.fold) })) },
+             issues: st.issues, styles: Object.fromEntries(Object.entries(st.styles).map(([k, v]) => [k, { styleMix: v.styleMix, rules: (v.hypotheses || []).length }])),
+             phaseMap: (store.get(pid).team || {}).phaseMap || {}, blocked, settings: { lastPublished: st.settings.lastPublished || null, lastPulled: st.settings.lastPulled || null, shareStyle: !!st.settings.shareStyle },
+             canUndoStyle: !!(behaviour.canUndoImport && behaviour.canUndoImport()) };
+  };
+  const teamCall = fn => async (_e, pid, ...args) => {
+    try { if (!store.get(pid)) throw new Error('Unknown project'); const out = await fn(pid, ...args); broadcast(); return { ok: true, ...(out || {}) }; }
+    catch (e) { return { error: e.message, rejected: e instanceof teamPlan.Rejected }; }
+  };
+  ipcMain.handle('team:state', teamCall(async pid => teamView(pid)));
+  ipcMain.handle('team:setup', teamCall(async pid => {
+    const tm = makeTeam(pid);
+    const r = await tm.setup();
+    if (r.created) await teamPlan.importLocalPlan(store, pid, tm);
+    return teamView(pid);
+  }));
+  ipcMain.handle('team:pull', teamCall(async pid => {
+    const tm = teamFor(pid); if (!tm) throw new Error('Set up team context first.');
+    await tm.pull();
+    return teamView(pid);
+  }));
+  ipcMain.handle('team:pending', teamCall(async pid => {
+    const tm = teamFor(pid); if (!tm) throw new Error('Set up team context first.');
+    return tm.pending();
+  }));
+  ipcMain.handle('team:publish', teamCall(async (pid, a = {}) => {
+    const tm = teamFor(pid); if (!tm) throw new Error('Set up team context first.');
+    const style = a.shareStyle && behaviour.exportStyle ? behaviour.exportStyle() : null;
+    const r = await tm.publish({ drafts: a.drafts, shareStyle: !!a.shareStyle, style });
+    return { nothing: !!r.nothing, ...(await teamView(pid)) };
+  }));
+  ipcMain.handle('team:action', teamCall(async (pid, op, a = {}) => {
+    const ops = opsFor(pid); if (!ops.team) throw new Error('Set up team context first.');
+    const fns = { start: () => ops.startPhase(a.phaseId), claim: () => ops.claim(a.phaseId, a.taskId), assign: () => ops.assign(a.phaseId, a.taskId, a.to),
+                  handoff: () => ops.handoff(a.phaseId, a.to), takeover: () => ops.takeover(a.phaseId), takeback: () => ops.takeback(a.phaseId),
+                  supersede: () => ops.supersedeDecision(a.decisionId, a.replacedBy, a.reason) };
+    if (!fns[op]) throw new Error('Unknown action');
+    const r = await fns[op]();
+    return teamView(pid, r && r.state);
+  }));
   ipcMain.handle('github:status', async () => {
     const tok = gitToken();
     if (!tok) return { hasToken: false };
@@ -1238,7 +1344,14 @@ function wireIpc() {
   ipcMain.handle('term:run', async (_e, pid, cmd) => {
     if (!store.get(pid) || !String(cmd || '').trim()) return { error: 'Nothing to run.' };
     if (terms.isRunning(pid)) return { error: 'A command is already running. Stop it first.' };
-    terms.run(pid, store.root(pid), String(cmd)).catch(() => {});
+    const run = terms.run(pid, store.root(pid), String(cmd));
+    run.catch(() => {});
+    // team context only: after the command finishes, detect/resolve issues and show a teammate's fix
+    const tm = teamFor(pid);
+    if (tm) {
+      run.then(r => teamHooks.terminalCommandHook(tm, { command: String(cmd), result: r, notify: ev => sendTeam(pid, ev.kind, ev), ...teamCommandContext(pid) }))
+        .catch(e => console.error('team context (terminal):', e));
+    }
     return { ok: true };
   });
   ipcMain.on('term:stop', (_e, pid) => terms.stop(pid));
@@ -1263,6 +1376,16 @@ function wireIpc() {
   ipcMain.on('behaviour:note', (_e, pid, kind) => behaviour.note(pid, kind));
   ipcMain.handle('behaviour:summary', () => behaviour.summary());
   ipcMain.handle('behaviour:edit', (_e, op, a) => { try { return behaviour.edit(op, a); } catch (e) { return { error: e.message }; } });
+  // "Answer like <name>": blend a teammate's shared answer style into mine (undoable)
+  ipcMain.handle('team:importStyle', async (_e, pid, personId) => {
+    try {
+      const tm = teamFor(pid); if (!tm) throw new Error('Set up team context first.');
+      const r = await teamHooks.importTeammateStyle(tm, behaviour, personId);
+      send('behaviour', behaviour.summary());
+      return { ok: true, ...r };
+    } catch (e) { return { error: e.message }; }
+  });
+  ipcMain.handle('team:undoStyle', () => { try { const s = behaviour.undoImport(); send('behaviour', s); return { ok: true }; } catch (e) { return { error: e.message }; } });
   ipcMain.handle('behaviour:analyse', () => runBehaviourAnalysis());
   ipcMain.on('behaviour:reveal', () => { fs.mkdirSync(behaviour.dir, { recursive: true }); shell.openPath(behaviour.dir); });
   ipcMain.handle('agent:chat', (_e, pid) => { const c = store.readChat(pid); return { transcript: c.transcript || [], running: running.has(pid), mode: c.mode === 'build' ? 'build' : 'teach' }; });
@@ -1294,6 +1417,7 @@ app.whenReady().then(() => {
   win = new BrowserWindow({
     width: 1360, height: 860, minWidth: 820, minHeight: 520,
     title: 'Vyuha', backgroundColor: '#10171a',
+    icon: path.join(__dirname, '..', 'renderer', 'assets', 'vyuha-app-icon-512.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
   });
   const t = makeTab(); activeId = t.id;

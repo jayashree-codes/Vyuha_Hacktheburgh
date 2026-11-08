@@ -385,6 +385,49 @@ class Store {
     return ph;
   }
 
+  // Team context: make the local phases follow the folded team plan ([{ id, name, tasks }], in order).
+  // syncNotes(oldNotes, tasks) only touches the checklist lines that belong to team tasks, so goals,
+  // earlier notes and update_notes summaries stay exactly as they are. Local phases that aren't in the
+  // team plan are kept at the end if they still have notes of their own, otherwise dropped.
+  syncTeamPlan(pid, phases, syncNotes) {
+    const p = this.get(pid);
+    if (!p || !Array.isArray(phases) || !phases.length) return false;
+    const before = JSON.stringify(p);
+    const team = p.team = p.team || {};
+    const map = team.phaseMap = team.phaseMap || {};
+    const used = new Set();
+    const name = (n, i) => { let b = slug(n) || 'phase', k = 2; while (used.has(b)) b = `${slug(n) || 'phase'}-${k++}`; used.add(b); return `${i + 1}-${b}`; };
+    const order = phases.map((ph, i) => name(ph.name, i));
+    const claimed = new Set();
+    const rename = {};
+    phases.forEach((ph, i) => {
+      let old = map[ph.id];
+      if (!old || !p.phases.includes(old) || claimed.has(old)) old = p.phases.find(x => !claimed.has(x) && !Object.values(map).includes(x) && bare(x) === bare(order[i]));
+      if (old) { claimed.add(old); rename[old] = order[i]; }
+    });
+    const strip = v => String(v || '').split('\n').filter(l => !/<!--vt:[\w-]+-->/.test(l)).join('\n').trim();
+    const kept = p.phases.filter(x => !claimed.has(x) && strip((p.phaseNotes || {})[x]) && strip((p.phaseNotes || {})[x]) !== 'Project created.');
+    kept.forEach((x, j) => { rename[x] = name(bare(x), order.length + j); });
+    const all = [...order, ...kept.map(x => rename[x])];
+    const into = all[0];
+    const target = old => rename[old] || into;
+    for (const e of p.events) if (e.phase) e.phase = target(e.phase);
+    for (const d of p.decisions) if (d.phase) d.phase = target(d.phase);
+    const notes = {};
+    phases.forEach((ph, i) => {
+      const old = Object.keys(rename).find(k => rename[k] === order[i]);
+      notes[order[i]] = syncNotes(old != null ? (p.phaseNotes || {})[old] || '' : '', ph.tasks || []);
+    });
+    for (const x of kept) notes[rename[x]] = p.phaseNotes[x];
+    p.phaseNotes = notes;
+    p.phase = target(p.phase);
+    p.phases = all;
+    team.phaseMap = Object.fromEntries(phases.map((ph, i) => [ph.id, order[i]]));
+    if (JSON.stringify(p) === before) return false;
+    this.save(p);
+    return true;
+  }
+
   setCurrentPhase(pid, ph) {
     const p = this.get(pid);
     if (!p.phases.includes(ph)) throw new Error('Unknown phase');

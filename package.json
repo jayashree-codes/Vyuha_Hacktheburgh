@@ -1,0 +1,16 @@
+{
+  "name": "vyuha",
+  "version": "0.1.0",
+  "description": "A project-aware browser",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/router.test.js && node test/agent.test.js && node test/behaviour.test.js && node test/team.test.js && node test/team.git.test.js && node test/team.plan.test.js && node test/team.issues.test.js && node test/team.noisy.test.js && node test/team.style.test.js && node test/team.sim.test.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^3.0.0",
+    "electron": "^45.2.3",
+    "monaco-editor": "^0.57.0"
+  }
+}

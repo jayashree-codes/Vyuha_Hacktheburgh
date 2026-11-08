@@ -179,6 +179,7 @@ function bhStyleTag(m) {
   const how = { you: 'you chose', auto: `chosen by Vyuha, ${pct}% sure`, pattern: 'from your pattern', explore: 'Vyuha is trying this style to learn what suits you',
                 holdout: 'normal answer, kept as a comparison sample', unsure: `normal answer, Vyuha was only ${pct}% sure`, off: 'adapting off' }[s.source] || s.source;
   const name = s.style ? BH_NAME[s.style] : 'Normal';
+  if (s.from) return `<button type="button" class="stag" data-act="behaviour-page" title="${esc('Matched: ' + (s.matched || []).join(' / '))}">${ICON.spark}<span>${esc(name)} · from ${esc(s.from)}’s pattern</span></button>`;
   return `<button type="button" class="stag" data-act="behaviour-page" title="${esc((s.matched || []).length ? 'Matched: ' + s.matched.join(' / ') : 'See how Vyuha learns your style')}">${ICON.spark}<span>${esc(name)} · ${esc(how)}</span></button>`;
 }
 

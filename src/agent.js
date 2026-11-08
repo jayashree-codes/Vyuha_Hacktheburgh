@@ -186,7 +186,29 @@ const TOOLS = [{
   ]
 }];
 
-const TEACH_MODE = `MODE: TEACH ME. The user is here to learn how to build this, like a student with a patient tutor.
+// Team context only: extra tool and an optional decision area. TOOLS itself never changes.
+const CLAIM_TASK = {
+  name: 'claim_task',
+  description: 'Claim a task in the team plan before you start working on it, so teammates see who is doing what. If the phase has no owner yet, claiming makes the user its owner.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      phase: { type: Type.STRING, description: 'Phase name; defaults to the current phase' },
+      task: { type: Type.STRING, description: 'The task text, or enough of it to identify it' }
+    },
+    required: ['task']
+  }
+};
+function teamTools() {
+  const decls = TOOLS[0].functionDeclarations.map(d => (d.name !== 'record_decision' ? d : {
+    ...d, parameters: { ...d.parameters, properties: { ...d.parameters.properties,
+      area: { type: Type.STRING, description: 'Optional: the part of the project this is about, e.g. "auth", "data", "ui"' } } }
+  }));
+  return [{ functionDeclarations: [...decls, CLAIM_TASK] }];
+}
+const stripTeamMarkers = s => String(s || '').replace(/\s*<!--vt:[\w-]+-->/g, '');
+
+const TEACH_MODE =`MODE: TEACH ME. The user is here to learn how to build this, like a student with a patient tutor.
 - Answer like a regular chat assistant: explain in the conversation, don't take actions by default.
 - Teach from first principles. Say what the problem is, why each step exists, and how the pieces connect (data → preparation → features → model → evaluation → improvement, or whatever fits the task).
 - Lay out a numbered roadmap first, then go through one step at a time. End each reply with what to try next or one short question that checks understanding.
@@ -202,11 +224,11 @@ const BUILD_MODE = `MODE: BUILD WITH ME. The user wants you to do the work along
 
 const cut = (s, n) => (s && s.length > n ? s.slice(0, n) + `\n…(${s.length - n} more characters)` : s || '');
 
-function systemPrompt(p, files, paths = [], mode = 'teach', style = '') {
+function systemPrompt(p, files, paths = [], mode = 'teach', style = '', teamSection = '') {
   const colName = id => ((p.collections || []).find(c => c.id === id) || { name: id }).name;
   const sources = p.events.map(e => `- [${colName(e.type)}${e.status === 'rejected' ? ', rejected' : ''}] ${e.title || e.url} | ${e.url} | phase ${e.phase || '-'} | why: ${e.why || '-'}`).join('\n') || '(none yet)';
   const decisions = (p.decisions || []).map(d => `- ${d.title}: ${d.detail} (phase ${d.phase})`).join('\n') || '(none yet)';
-  const notes = p.phases.map(ph => `- ${ph}${ph === p.phase ? ' (current)' : ''}: ${(p.phaseNotes || {})[ph] || ''}`).join('\n');
+  const notes = p.phases.map(ph => `- ${ph}${ph === p.phase ? ' (current)' : ''}: ${stripTeamMarkers((p.phaseNotes || {})[ph] || '')}`).join('\n');
   let budget = 24000;
   const code = files.map(f => {
     const body = cut(f.content, Math.max(0, Math.min(6000, budget)));
@@ -238,7 +260,7 @@ ${tree}
 Contents of some files (use read_file for others):
 ${code}
 
-${mode === 'build' ? BUILD_MODE : TEACH_MODE}
+${teamSection ? teamSection + '\n\n' : ''}${mode === 'build' ? BUILD_MODE : TEACH_MODE}
 
 How to work:
 - When you need information from the web, use search_web and open_page rather than relying on memory. Every page you open is filed into the project, so only open pages that are relevant.
@@ -319,12 +341,12 @@ async function send(chat, message, onText, prefix) {
   return { text, functionCalls: calls.length ? calls : undefined };
 }
 
-async function run({ apiKey, model, fallbackModel, project, files, paths, history, message, tools, client, onNotice, onText, mode, style }) {
+async function run({ apiKey, model, fallbackModel, project, files, paths, history, message, tools, client, onNotice, onText, mode, style, toolDecls, teamSection }) {
   const ai = client || new GoogleGenAI({ apiKey });
   const notice = onNotice || (() => {});
   const start = m => ai.chats.create({
     model: m,
-    config: { systemInstruction: systemPrompt(project, files, paths, mode, style), tools: TOOLS },
+    config: { systemInstruction: systemPrompt(project, files, paths, mode, style, teamSection), tools: toolDecls || TOOLS },
     history: history || []
   });
   const onRetry = (n, ms) => notice(`Gemini is busy, retrying in ${ms / 1000}s (attempt ${n + 1})`);
@@ -425,6 +447,42 @@ ${reply.slice(0, 12000)}`,
   try { return JSON.parse(r.text || '{}'); } catch (e) { return null; }
 }
 
+// Team context: turn a fixed error into a short issue card for teammates.
+// Inputs are only the command, the (scrubbed) error, the files changed, the diff and Gemini's own replies:
+// never the user's prompts.
+async function extractIssue({ apiKey, model, client, command, errorExcerpt, filesChanged, diff, geminiReplies }) {
+  const ai = client || new GoogleGenAI({ apiKey });
+  if (!ai.models || !ai.models.generateContent) return null;
+  const r = await withRetry(() => ai.models.generateContent({
+    model,
+    contents: `A command failed and was then fixed. Write a short issue card so a teammate who hits the same error can fix it fast.
+title: under 70 characters, names the error. symptom: what you see. cause: why it happened. fix: the concrete change that fixed it (files, settings, commands).
+Use only the material below. If the cause is unclear, say so.
+
+Command: ${command}
+
+Error output (end):
+${String(errorExcerpt || '').slice(0, 1500)}
+
+Files changed: ${(filesChanged || []).join(', ') || '(none recorded)'}
+
+Diff:
+${String(diff || '').slice(0, 8000) || '(none)'}
+
+Assistant replies while fixing it:
+${(geminiReplies || []).join('\n---\n').slice(0, 8000) || '(none)'}`,
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: { title: { type: Type.STRING }, symptom: { type: Type.STRING }, cause: { type: Type.STRING }, fix: { type: Type.STRING } },
+        required: ['title', 'symptom', 'cause', 'fix']
+      }
+    }
+  }));
+  try { return JSON.parse(r.text || '{}'); } catch (e) { return null; }
+}
+
 // The behaviour analyst: reads aggregate numbers about how the user works and proposes testable patterns.
 async function analyseBehaviour({ apiKey, model, client, summary }) {
   const ai = client || new GoogleGenAI({ apiKey });
@@ -489,4 +547,5 @@ async function test({ apiKey, model }) {
 // tests use short waits
 const _setRetryWaits = w => RETRY_WAITS.splice(0, RETRY_WAITS.length, ...w);
 
-module.exports = { run, test, commitMessage, analyseBehaviour, extractDatasets, extractPlan, trimHistory, friendlyError, SITES, TOOLS, systemPrompt, _setRetryWaits };
+module.exports = { run, test, commitMessage, analyseBehaviour, extractDatasets, extractPlan, trimHistory, friendlyError, SITES, TOOLS, systemPrompt, _setRetryWaits,
+                   teamTools, CLAIM_TASK, extractIssue };

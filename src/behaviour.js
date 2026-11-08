@@ -37,6 +37,9 @@ const Z_FEATURES = ['words', 'specificity', 'typing_speed', 'pauses', 'backspace
 const FLAGS = ['rephrase', 'early_phase', 'build_mode', 'late_night', 'long_session', 'after_bad_answer', 'open_question', 'do_request'];
 const X_NAMES = ['bias', ...Z_FEATURES.map(f => f + '_z'), ...FLAGS];
 const FEATURE_NAMES = X_NAMES.slice(1);   // what hypotheses may test
+// team context: how someone types is never shared in an exported answer style
+const TYPING_X = ['typing_speed_z', 'pauses_z', 'backspace_z'];
+const SHARED_X = X_NAMES.filter(n => !TYPING_X.includes(n));
 // words are compared on a log scale, so their default is log(1+18 words) with a spread of about ±55%
 const DEFAULT_BASE = { words: [Math.log1p(18), 0.55], specificity: [2, 1.5], typing_speed: [4, 1.5], pauses: [1, 1], backspace: [0.08, 0.05] };
 
@@ -218,7 +221,7 @@ class Behaviour {
       return c.op === '<' ? v < c.value : c.op === '>' ? v > c.value : Math.round(v) === Number(c.value);
     });
   }
-  active(h) { return h.enabled && (h.status === 'stated' || h.status === 'promoted'); }
+  active(h) { return h.enabled && (h.status === 'stated' || h.status === 'promoted' || h.status === 'borrowed'); }
 
   /* ---------- choosing a style ---------- */
   // sample = 0: the posterior mean; otherwise a random draw with the noise scaled by `sample`
@@ -237,7 +240,7 @@ class Behaviour {
   }
   decide(feat, override, { preview = false } = {}) {
     const out = { state: this.state(feat, this.p.last && this.p.last.reward), matched: [] };
-    for (const h of this.p.hypotheses) if (this.active(h) && this.matches(h, feat.named)) out.matched.push({ id: h.id, text: h.text, style: h.style });
+    for (const h of this.p.hypotheses) if (this.active(h) && this.matches(h, feat.named)) out.matched.push({ id: h.id, text: h.text, style: h.style, ...(h.from ? { from: h.from } : {}) });
     // how sure the model is: share of 64 posterior samples in which each style wins
     const wins = Object.fromEntries(ARMS.map(a => [a, 0]));
     for (let k = 0; k < 64; k++) {
@@ -365,6 +368,7 @@ class Behaviour {
       const n = h.support + h.against;
       if (h.status === 'testing' && n >= 15 && h.support / n >= 0.75) h.status = 'promoted';
       else if (h.status === 'testing' && n >= 15 && h.support / n < 0.4) h.status = 'retired';
+      else if (h.status === 'borrowed' && n >= 15 && h.support / n < 0.4) h.status = 'retired';   // a teammate's rule that doesn't fit me
       else if (h.status === 'promoted' && n >= 25 && h.support / n < 0.5) h.status = 'testing';
       h.contradicted = h.status === 'stated' && n >= 15 && h.support / n < 0.4;
     }
@@ -485,6 +489,66 @@ class Behaviour {
     return this.summary();
   }
 
+  /* ---------- team context: sharing an answer style ---------- */
+  // What a teammate may borrow: the learned weights and the active rules. Never history (my baselines),
+  // signals, the last interaction, raw stats or settings, and nothing about how I type: the weights for
+  // typing speed, pauses and backspaces (and rules that use them) stay on this computer.
+  exportStyle() {
+    const keep = SHARED_X.map(n => X_NAMES.indexOf(n));
+    const arms = {};
+    for (const a of ARMS) { const b = this.p.bandit[a]; arms[a] = { m: keep.map(i => b.m[i]), q: keep.map(i => b.q[i]), n: b.n }; }
+    return {
+      version: 1,
+      features: [...SHARED_X],
+      arms,
+      hypotheses: this.p.hypotheses.filter(h => h.enabled && ['stated', 'promoted', 'testing'].includes(h.status) && !h.when.some(c => TYPING_X.includes(c.feature)))
+        .map(h => ({ text: h.text, when: h.when.map(c => ({ ...c })), style: h.style, status: h.status })),
+      styleMix: Object.fromEntries(ARMS.map(a => [a, this.p.bandit[a].n]))
+    };
+  }
+  get backupFile() { return path.join(this.dir, 'profile.backup.json'); }
+  canUndoImport() { return fs.existsSync(this.backupFile); }
+  // Blend a teammate's style into mine. weight = how much of theirs (0..1).
+  importStyle(style, fromName, weight = 0.5) {
+    if (!style || !Array.isArray(style.features) || style.features.length !== SHARED_X.length || style.features.some((f, i) => f !== SHARED_X[i])) {
+      throw new Error('This answer style was made by a different version of Vyuha (its features don’t match), so it can’t be used.');
+    }
+    const w = clip(Number(weight), 0, 1);
+    this.save();   // make sure profile.json exists, then back it up
+    fs.copyFileSync(this.file, this.backupFile);
+    for (const a of ARMS) {
+      const mine = this.p.bandit[a], theirs = style.arms && style.arms[a];
+      if (!theirs || !Array.isArray(theirs.m) || theirs.m.length !== SHARED_X.length) continue;
+      // blend the shared weights; my own typing weights (never shared) keep their values
+      SHARED_X.forEach((n, j) => {
+        const i = X_NAMES.indexOf(n);
+        mine.m[i] = (1 - w) * mine.m[i] + w * Number(theirs.m[j] || 0);
+        mine.q[i] = Math.max(PRIOR_PRECISION, mine.q[i] * 0.5);   // less certain, so new evidence moves it
+      });
+    }
+    let added = 0;
+    for (const h of style.hypotheses || []) {
+      if (!h || !STYLES[h.style] || !Array.isArray(h.when) || !h.when.length) continue;
+      if (h.when.some(c => TYPING_X.includes(c.feature))) continue;
+      const when = h.when.filter(c => FEATURE_NAMES.includes(c.feature) && ['<', '>', '='].includes(c.op)).map(c => ({ feature: c.feature, op: c.op, value: Number(c.value) }));
+      if (!when.length) continue;
+      const sig = JSON.stringify([when, h.style]);
+      if (this.p.hypotheses.some(x => JSON.stringify([x.when, x.style]) === sig)) continue;
+      this.p.hypotheses.push({ id: 'h' + this.now().toString(36) + 't' + added, text: String(h.text || '').slice(0, 240), source: 'teammate', from: String(fromName || 'a teammate'),
+                               status: 'borrowed', when, style: h.style, support: 0, against: 0, enabled: true, created: new Date(this.now()).toISOString() });
+      added++;
+    }
+    this.save();
+    return { added, from: fromName };
+  }
+  undoImport() {
+    if (!this.canUndoImport()) throw new Error('There is no imported style to undo.');
+    fs.copyFileSync(this.backupFile, this.file);
+    fs.rmSync(this.backupFile, { force: true });
+    this.p = this.load();
+    return this.summary();
+  }
+
   /* ---------- what the UI shows ---------- */
   summary() {
     const st = this.p.stats;
@@ -507,9 +571,10 @@ class Behaviour {
       rephraseEarlier: rr.length >= 60 ? avg(rr.slice(0, -50)) : null,
       analysis: this.p.analysis,
       sinceAnalysis: st.sinceAnalysis,
-      dir: this.dir
+      dir: this.dir,
+      canUndoImport: this.canUndoImport()
     };
   }
 }
 
-module.exports = { Behaviour, STYLES, ARMS, FEATURE_NAMES, textFeatures, similarity };
+module.exports = { Behaviour, STYLES, ARMS, FEATURE_NAMES, X_NAMES, SHARED_X, TYPING_X, PRIOR_PRECISION, textFeatures, similarity };
