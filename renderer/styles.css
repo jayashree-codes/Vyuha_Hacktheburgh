@@ -71,9 +71,9 @@ code, pre { font-family: var(--f-mono); }
 .home { height: 100%; display: flex; flex-direction: column; align-items: center; padding: 22vh 20px 40px; }
 .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 30px; color: var(--fg); }
 .brand svg { color: var(--accent); }
-/* the "vyuha" wordmark uses Sora (bundled, SIL Open Font License) */
-@font-face { font-family: 'Sora'; src: url('assets/sora-latin-700-normal.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
-.wordmark { font-family: 'Sora', var(--f-display); font-weight: 700; font-size: 68px; letter-spacing: -.04em; line-height: 1; }
+/* the "vyuha" wordmark uses Space Grotesk (bundled, SIL Open Font License) */
+@font-face { font-family: 'Space Grotesk'; src: url('assets/space-grotesk-latin-700-normal.woff2') format('woff2'); font-weight: 700; font-style: normal; font-display: swap; }
+.wordmark { font-family: 'Space Grotesk', var(--f-display); font-weight: 700; font-size: 84px; letter-spacing: -.045em; line-height: 1; }
 .search { width: 100%; max-width: 640px; display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 18px; box-shadow: var(--shadow); }
 .search:focus-within { border-color: var(--accent); }
 .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; padding: 9px 0; font-size: 16px; }
@@ -196,7 +196,7 @@ button.url:hover { text-decoration: underline; }
 .pmain { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); overflow: hidden; }
 .pstart { height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; padding: 16vh 24px 40px; }
 .brand.small { margin-bottom: 10px; }
-.brand.small .wordmark { font-size: 40px; }
+.brand.small .wordmark { font-size: 48px; }
 .scope { color: var(--muted); margin: 0 0 20px; text-align: center; max-width: 60ch; }
 .answer { width: 100%; max-width: 640px; margin-top: 22px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; padding: 16px 18px; background: var(--bg); }
 .answer .aq { color: var(--faint); font-size: 12.5px; margin: 0 0 6px; }

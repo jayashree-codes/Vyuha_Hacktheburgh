@@ -1415,11 +1415,14 @@ app.whenReady().then(() => {
   wireIpc();
 
   win = new BrowserWindow({
-    width: 1360, height: 860, minWidth: 820, minHeight: 520,
+    width: 1360, height: 860, minWidth: 820, minHeight: 520, show: false,
     title: 'Vyuha', backgroundColor: '#10171a',
     icon: path.join(__dirname, '..', 'renderer', 'assets', 'vyuha-app-icon-512.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true }
   });
+  // open maximized (1360x860 is the size it returns to when un-maximized)
+  win.maximize();
+  win.show();
   const t = makeTab(); activeId = t.id;
   buildMenu();
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));

@@ -154,7 +154,7 @@ function renderPlain(t) {
   if (t.pane === 'start') {
     $('#content').innerHTML = `
       <div class="home">
-        <div class="brand">${ICON.markBig(48)}<span class="wordmark">vyuha</span></div>
+        <div class="brand">${ICON.markBig(64)}<span class="wordmark">vyuha</span></div>
         <form id="homeForm" class="search" autocomplete="off">
           <input id="homeInput" placeholder="Search, go to a site, or ask about a project" aria-label="Search">
           <button class="go" aria-label="Go">${ICON.go}</button>
