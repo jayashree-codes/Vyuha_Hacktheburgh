@@ -32,6 +32,7 @@ A project-aware browser and AI workspace that keeps everything about a project i
    ```
    npm install monaco-editor
    npm install @google/genai
+   npm install electron@latest
    ```
 
 3. Start the app:
