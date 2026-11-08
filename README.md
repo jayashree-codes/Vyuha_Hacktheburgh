@@ -18,11 +18,20 @@ A project-aware browser and AI workspace that keeps everything about a project i
    git clone https://github.com/jayashree-codes/Vyuha_Hacktheburgh.git
    cd Vyuha_Hacktheburgh
    ```
+2. If node not available already
+   ```
+   brew install node
+   ```
 
 2. Install the dependencies (Electron, Monaco editor, Google Gen AI SDK):
 
    ```bash
    npm install
+   ```
+   If dependencies still not installed - use:
+   ```
+   npm install monaco-editor
+   npm install @google\genai
    ```
 
 3. Start the app:
