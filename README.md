@@ -31,7 +31,7 @@ A project-aware browser and AI workspace that keeps everything about a project i
    If dependencies still not installed - use:
    ```
    npm install monaco-editor
-   npm install @google\genai
+   npm install @google/genai
    ```
 
 3. Start the app:
