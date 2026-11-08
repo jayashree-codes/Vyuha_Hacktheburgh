@@ -37,6 +37,7 @@ A project-aware browser and AI workspace that keeps everything about a project i
 3. Start the app:
 
    ```bash
+   node node_modules/electron/install.js
    npm start
    ```
 
