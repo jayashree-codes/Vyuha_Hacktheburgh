@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Vyuha per-project notes/state
+.vyuha/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build output
+dist/
+out/
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
